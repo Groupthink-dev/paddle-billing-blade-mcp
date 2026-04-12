@@ -1,32 +1,121 @@
 name: paddle-billing-blade-mcp
-description: >
-  Paddle Billing API operations — products, prices, subscriptions,
-  transactions, webhooks. Token-efficient with pipe-delimited output,
-  field selection, and human-readable money formatting. Write-gated
-  with confirm gate for destructive operations.
-version: 0.1.0
+version: "0.1.0"
+description: "Paddle Billing API operations — products, prices, subscriptions, transactions, webhooks. Token-efficient with pipe-delimited output, field selection, and human-readable money formatting."
 author: groupthink-dev
 licence: MIT
 tier: certified
 author_type: first-party
 readiness: beta
+homepage: https://github.com/Groupthink-dev/paddle-billing-blade-mcp
 contract: billing-v1
-repository: https://github.com/groupthink-dev/paddle-billing-blade-mcp
+
+services:
+  billing:
+    # Meta
+    info: paddle_info
+    ip_addresses: paddle_ip_addresses
+    # Products & Prices
+    products: paddle_products
+    product: paddle_product
+    create_product: paddle_create_product
+    update_product: paddle_update_product
+    prices: paddle_prices
+    price: paddle_price
+    create_price: paddle_create_price
+    update_price: paddle_update_price
+    # Customers
+    customers: paddle_customers
+    customer: paddle_customer
+    create_customer: paddle_create_customer
+    update_customer: paddle_update_customer
+    customer_credit: paddle_customer_credit
+    customer_portal: paddle_customer_portal
+    customer_addresses: paddle_customer_addresses
+    create_address: paddle_create_address
+    update_address: paddle_update_address
+    customer_businesses: paddle_customer_businesses
+    create_business: paddle_create_business
+    # Subscriptions
+    subscriptions: paddle_subscriptions
+    subscription: paddle_subscription
+    update_subscription: paddle_update_subscription
+    subscription_lifecycle: paddle_subscription_lifecycle
+    activate_subscription: paddle_activate_subscription
+    subscription_charge: paddle_subscription_charge
+    preview_subscription: paddle_preview_subscription
+    # Transactions
+    transactions: paddle_transactions
+    transaction: paddle_transaction
+    create_transaction: paddle_create_transaction
+    preview_transaction: paddle_preview_transaction
+    invoice_pdf: paddle_invoice_pdf
+    # Adjustments & Discounts
+    adjustments: paddle_adjustments
+    create_adjustment: paddle_create_adjustment
+    discounts: paddle_discounts
+    discount: paddle_discount
+    create_discount: paddle_create_discount
+    update_discount: paddle_update_discount
+    # Payment Methods
+    payment_methods: paddle_payment_methods
+    delete_payment_method: paddle_delete_payment_method
+
+setup:
+  auth_model: api_key
+  complexity: moderate
+  icon: "creditcard"
+  product: "Paddle Billing"
+  blurb: "Connect to Paddle for subscription billing — products, prices, customers, transactions."
+  fields:
+    - key: PADDLE_API_KEY
+      label: "API Key"
+      secret: true
+      required: true
+      placeholder: "pdl_sdbx_... or pdl_live_..."
+      help: "Paddle API key. Use sandbox key for testing."
+    - key: PADDLE_ENVIRONMENT
+      label: "Environment"
+      secret: false
+      required: true
+      placeholder: "sandbox or production"
+      help: "Must be sandbox or production. Fail-closed on invalid values."
+  test:
+    endpoint: "https://sandbox-api.paddle.com/products"
+    auth_style: bearer
+    auth_header: "Authorization"
+  help:
+    - label: "Paddle Developer Docs"
+      url: "https://developer.paddle.com"
+    - label: "Create API Key"
+      url: "https://vendors.paddle.com/authentication"
 
 install:
   runtime: uv
   package: paddle-billing-blade-mcp
 
-environment:
-  required:
-    - PADDLE_API_KEY
-    - PADDLE_ENVIRONMENT
-  optional:
-    - PADDLE_WRITE_ENABLED
-    - PADDLE_WEBHOOK_SECRET
-    - PADDLE_MCP_API_TOKEN
-    - PADDLE_MCP_TRANSPORT
-    - PADDLE_MCP_HOST
-    - PADDLE_MCP_PORT
+env:
+  - name: PADDLE_API_KEY
+    description: "Paddle API key (pdl_sdbx_* or pdl_live_*)"
+    secret: true
+  - name: PADDLE_ENVIRONMENT
+    description: "sandbox or production (mandatory)"
+    secret: false
+  - name: PADDLE_WRITE_ENABLED
+    description: "Enable write operations"
+    default: "false"
+  - name: PADDLE_WEBHOOK_SECRET
+    description: "Webhook signing secret for HMAC verification"
+    secret: true
+  - name: PADDLE_MCP_TRANSPORT
+    description: "Transport mode: stdio (default) or http"
+    default: "stdio"
+  - name: PADDLE_MCP_API_TOKEN
+    description: "Bearer token for HTTP transport auth"
+    secret: true
 
-tools: 40
+requires:
+  sidereal: ">=0.40"
+
+conformance:
+  required: "40/40"
+  last_tested: "2026-04-01"
