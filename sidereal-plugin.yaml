@@ -8,6 +8,8 @@ version: 0.1.0
 author: groupthink-dev
 licence: MIT
 tier: certified
+author_type: first-party
+readiness: beta
 contract: billing-v1
 repository: https://github.com/groupthink-dev/paddle-billing-blade-mcp
 
