@@ -1,6 +1,6 @@
 [project]
 name = "paddle-billing-blade-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Paddle Billing MCP Server — products, subscriptions, transactions, webhooks"
 readme = "README.md"
 license = {text = "MIT"}
