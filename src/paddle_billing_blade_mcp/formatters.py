@@ -358,6 +358,69 @@ def format_adjustment_list(response: dict[str, Any], limit: int = DEFAULT_LIMIT)
     return "\n".join(lines)
 
 
+def format_adjustment_detail(response: dict[str, Any]) -> str:
+    """Format a single adjustment.
+
+    Paddle's ``GET /adjustments?id=X`` returns a list-shaped response.
+    Unwrap the first item; if absent, report not found.
+    """
+    items = response.get("data") or []
+    if isinstance(items, dict):
+        a = items
+    elif items:
+        a = items[0]
+    else:
+        return "Adjustment not found."
+
+    lines: list[str] = []
+    lines.append(f"ID: {a.get('id', '?')}")
+    lines.append(f"Transaction: {a.get('transaction_id', '?')}")
+    lines.append(f"Action: {a.get('action', '?')}")
+    lines.append(f"Status: {a.get('status', '?')}")
+
+    totals = a.get("totals") or {}
+    total = totals.get("total")
+    currency = a.get("currency_code", "???")
+    if total:
+        lines.append(f"Total: {format_money(total, currency)}")
+
+    if reason := a.get("reason"):
+        lines.append(f"Reason: {reason}")
+    if customer_id := a.get("customer_id"):
+        lines.append(f"Customer: {customer_id}")
+    if subscription_id := a.get("subscription_id"):
+        lines.append(f"Subscription: {subscription_id}")
+    if created_at := a.get("created_at"):
+        lines.append(f"Created: {format_datetime(created_at)}")
+    if credit_applied := a.get("credit_applied_to_balance"):
+        lines.append(f"Credit applied: {credit_applied}")
+
+    return "\n".join(lines)
+
+
+def format_event_type_list(response: dict[str, Any]) -> str:
+    """Format event type listing.
+
+    Example::
+
+        subscription.activated | Triggered when a subscription becomes active
+        subscription.canceled  | Triggered when a subscription is canceled
+    """
+    items = response.get("data") or []
+    if not items:
+        return "No event types found."
+
+    lines: list[str] = []
+    for et in items:
+        name = et.get("name", "?")
+        desc = et.get("description") or et.get("group", "")
+        if desc:
+            lines.append(f"{name} | {desc}")
+        else:
+            lines.append(name)
+    return "\n".join(lines)
+
+
 def format_discount_list(response: dict[str, Any], limit: int = DEFAULT_LIMIT) -> str:
     """Format discount list.
 

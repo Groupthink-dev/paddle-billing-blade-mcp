@@ -480,6 +480,15 @@ class PaddleClient:
             params["action"] = action
         return await self._get("/adjustments", params)
 
+    async def get_adjustment(self, adjustment_id: str) -> dict[str, Any]:
+        """Fetch a single adjustment by ID via the list endpoint with id filter.
+
+        Paddle's API does not expose ``GET /adjustments/{id}``; the canonical
+        path is to list with the ``id`` query parameter and unwrap the first
+        result. The shape returned matches a single-item list response.
+        """
+        return await self._get("/adjustments", {"id": adjustment_id})
+
     async def create_adjustment(self, body: dict[str, Any]) -> dict[str, Any]:
         """Create an adjustment (refund/credit/chargeback)."""
         return await self._post("/adjustments", body)

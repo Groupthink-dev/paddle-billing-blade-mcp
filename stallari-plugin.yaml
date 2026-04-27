@@ -1,13 +1,15 @@
 name: paddle-billing-blade-mcp
-version: "0.1.1"
-description: "Paddle Billing API operations — products, prices, subscriptions, transactions, webhooks. Token-efficient with pipe-delimited output, field selection, and human-readable money formatting."
+version: "0.2.0"
+description: "Paddle Billing API operations — billing-v1 (subscription billing, products, prices) + payments-v1 (transactions as one-time payments, adjustments as refunds). Token-efficient with pipe-delimited output, field selection, and human-readable money formatting."
 author: groupthink-dev
 license: MIT
 tier: certified
 author_type: first-party
 readiness: beta
 homepage: https://github.com/groupthink-dev/paddle-billing-blade-mcp
-contract: billing-v1
+contract:
+  - billing-v1
+  - payments-v1
 
 services:
   billing:
@@ -71,6 +73,50 @@ services:
     reports: paddle_reports
     simulate: paddle_create_simulation
 
+  # ----------------------------------------------------------------------
+  # payments-v1 mappings (Paddle one-time payments via transactions,
+  # refunds via adjustments). Listed gaps in not_supported below.
+  # ----------------------------------------------------------------------
+  payments:
+    payment_create: paddle_create_transaction
+    payment_get: paddle_transaction
+    payment_list: paddle_transactions
+    refund_create: paddle_create_adjustment
+    refund_get: paddle_adjustment
+    refund_list: paddle_adjustments
+    customer_create: paddle_create_customer
+    customer_get: paddle_customer
+    customer_list: paddle_customers
+    customer_update: paddle_update_customer
+    card_list: paddle_payment_methods
+    card_disable: paddle_delete_payment_method
+    order_create: paddle_create_transaction
+    order_get: paddle_transaction
+    order_list: paddle_transactions
+    order_update: paddle_update_subscription
+    webhook_subscription_list: paddle_notifications
+    webhook_event_types: paddle_event_types
+    webhook_verify: paddle_verify_webhook
+
+# Operations declared in payments-v1 that Paddle does not support.
+# Required ops in this list are honest gaps — discovery must filter Paddle out
+# when these ops are demanded by an operator.
+not_supported:
+  - payment_cancel       # Paddle has no auth/capture flow; transactions settle on creation
+  - payment_complete     # Same — no manual capture step
+  - card_create          # Paddle uses hosted Checkout, not server-side card_create
+  - location_list        # Paddle has no concept of physical locations
+  - card_delete          # use card_disable
+  - inventory_count      # not applicable to Paddle's product model
+  - inventory_adjust     # not applicable
+  - dispute_list         # disputes managed in Paddle web dashboard only
+  - dispute_get          # same
+  - catalog_list         # paddle_products is billing-shaped, not a payments catalog
+  - catalog_get          # same
+  - order_pay            # implicit — transactions settle on creation
+  - webhook_subscription_create  # notification-settings managed in Paddle web
+  - webhook_subscription_delete  # same
+
 setup:
   auth_model: api_key
   complexity: moderate
@@ -128,8 +174,15 @@ requires:
   stallari: ">=0.60"
 
 conformance:
-  required: "6/6"
-  recommended: "8/8"
-  optional: "6/6"
-  gated: "8/8"
-  last_tested: "2026-04-18"
+  billing-v1:
+    required: "6/6"
+    recommended: "8/8"
+    optional: "6/6"
+    gated: "8/8"
+    last_tested: "2026-04-18"
+  payments-v1:
+    required: "8/12"   # missing payment_cancel, payment_complete, webhook_subscription_create, webhook_subscription_delete
+    recommended: "6/8" # missing card_create, location_list
+    optional: "5/10"   # missing dispute_*, catalog_*, order_pay, inventory_count
+    gated: "0/6"       # all gated payments-v1 ops are not supported in Paddle
+    last_tested: "2026-04-27"

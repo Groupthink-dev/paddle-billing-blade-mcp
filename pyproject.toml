@@ -1,7 +1,7 @@
 [project]
 name = "paddle-billing-blade-mcp"
-version = "0.1.1"
-description = "Paddle Billing MCP Server — products, subscriptions, transactions, webhooks"
+version = "0.2.0"
+description = "Paddle Billing MCP Server — billing-v1 (products, subscriptions, transactions) + payments-v1 (transactions, refunds via adjustments, customers), webhooks"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.12"

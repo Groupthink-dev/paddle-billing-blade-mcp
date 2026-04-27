@@ -19,6 +19,7 @@ from pydantic import Field
 from paddle_billing_blade_mcp.client import PaddleClient, PaddleError
 from paddle_billing_blade_mcp.formatters import (
     format_address_list,
+    format_adjustment_detail,
     format_adjustment_list,
     format_business_list,
     format_credit_balance,
@@ -29,6 +30,7 @@ from paddle_billing_blade_mcp.formatters import (
     format_discount_list,
     format_event_detail,
     format_event_list,
+    format_event_type_list,
     format_ip_addresses,
     format_notification_detail,
     format_notification_list,
@@ -877,6 +879,19 @@ async def paddle_adjustments(
 
 
 @mcp.tool
+async def paddle_adjustment(
+    adjustment_id: Annotated[str, Field(description="Adjustment ID (adj_*)")],
+) -> str:
+    """Get a single adjustment by ID (refund, credit, or chargeback record)."""
+    try:
+        client = await _get_client()
+        result = await client.get_adjustment(adjustment_id)
+        return format_adjustment_detail(result)
+    except PaddleError as e:
+        return _error(e)
+
+
+@mcp.tool
 async def paddle_create_adjustment(
     transaction_id: Annotated[str, Field(description="Transaction ID (txn_*)")],
     action: Annotated[str, Field(description="Action: refund or credit")],
@@ -1158,6 +1173,17 @@ async def paddle_events(
         client = await _get_client()
         result = await client.list_events(limit=limit, after=after)
         return format_event_list(result, limit)
+    except PaddleError as e:
+        return _error(e)
+
+
+@mcp.tool
+async def paddle_event_types() -> str:
+    """List all event types Paddle can emit (used to populate webhook subscriptions)."""
+    try:
+        client = await _get_client()
+        result = await client.list_event_types()
+        return format_event_type_list(result)
     except PaddleError as e:
         return _error(e)
 
