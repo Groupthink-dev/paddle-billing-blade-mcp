@@ -109,12 +109,25 @@ SAMPLE_TRANSACTION: dict[str, Any] = {
             {
                 "product": {"name": "Pro Plan"},
                 "quantity": 1,
-                "total": "2900",
+                # Real wire: the line-item amount lives under totals.total,
+                # NOT a top-level "total" key.
+                "totals": {"subtotal": "2900", "tax": "0", "total": "2900"},
             }
         ],
     },
     "billed_at": "2026-03-15T10:00:00Z",
     "created_at": "2026-03-15T10:00:00Z",
+}
+
+# Live GET /ips wire shape: data is an object whose ipv4_cidrs key holds CIDR strings.
+SAMPLE_IP_ADDRESSES: dict[str, Any] = {
+    "data": {
+        "ipv4_cidrs": [
+            "34.194.127.46/32",
+            "54.234.237.108/32",
+            "3.208.120.145/32",
+        ]
+    }
 }
 
 SAMPLE_PAGINATION_META: dict[str, Any] = {

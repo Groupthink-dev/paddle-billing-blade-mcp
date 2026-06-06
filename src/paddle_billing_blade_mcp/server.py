@@ -8,10 +8,12 @@ confirm=true.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
-from typing import Annotated
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -47,6 +49,8 @@ from paddle_billing_blade_mcp.formatters import (
     format_transaction_detail,
     format_transaction_list,
     format_webhook_verification,
+    mark_call_start,
+    meta_tail,
 )
 from paddle_billing_blade_mcp.models import DEFAULT_LIMIT, require_confirm, require_write
 
@@ -93,12 +97,24 @@ def _error(e: PaddleError) -> str:
     return f"Error: {e}"
 
 
+def _audited(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    """Stamp call-start so each tool's ``meta_tail`` reports real latency (CONV-29)."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> str:
+        mark_call_start()
+        return await fn(*args, **kwargs)
+
+    return wrapper
+
+
 # ===========================================================================
 # Meta tools
 # ===========================================================================
 
 
 @mcp.tool
+@_audited
 async def paddle_info() -> str:
     """Show Paddle environment, API connectivity, and configuration status."""
     try:
@@ -106,18 +122,22 @@ async def paddle_info() -> str:
         env = client.environment
         write = "enabled" if os.environ.get("PADDLE_WRITE_ENABLED", "").lower() == "true" else "disabled"
         webhook = "configured" if os.environ.get("PADDLE_WEBHOOK_SECRET", "").strip() else "not configured"
-        return f"Environment: {env}\nAPI: connected\nWrites: {write}\nWebhook secret: {webhook}"
+        payload = f"Environment: {env}\nAPI: connected\nWrites: {write}\nWebhook secret: {webhook}"
+        return meta_tail(payload, 1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_ip_addresses() -> str:
     """Get Paddle IP addresses for webhook firewall allowlisting."""
     try:
         client = await _get_client()
         result = await client.list_ip_addresses()
-        return format_ip_addresses(result)
+        inner = result.get("data", {})
+        cidrs = inner.get("ipv4_cidrs", []) if isinstance(inner, dict) else []
+        return meta_tail(format_ip_addresses(result), len(cidrs))
     except PaddleError as e:
         return _error(e)
 
@@ -128,6 +148,7 @@ async def paddle_ip_addresses() -> str:
 
 
 @mcp.tool
+@_audited
 async def paddle_products(
     status: Annotated[str | None, Field(description="Filter: active or archived")] = None,
     tax_category: Annotated[str | None, Field(description="Filter by tax category")] = None,
@@ -140,12 +161,13 @@ async def paddle_products(
         client = await _get_client()
         result = await client.list_products(status=status, tax_category=tax_category, limit=limit, after=after)
         _ = fields  # Field selection applied in detail views; list view is already concise
-        return format_product_list(result, limit)
+        return meta_tail(format_product_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_product(
     product_id: Annotated[str, Field(description="Product ID (pro_*)")],
     include_prices: Annotated[bool, Field(description="Include associated prices")] = False,
@@ -170,12 +192,13 @@ async def paddle_product(
                 prc = _format_price_with_cycle(p)
                 st = p.get("status", "?")
                 output += f"\n  {pid} | {desc} | {prc} | {st}"
-        return output
+        return meta_tail(output, 1, target_id=data.get("id"))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_product(
     name: Annotated[str, Field(description="Product name")],
     tax_category: Annotated[str, Field(description="Tax category (e.g., standard, digital-goods, saas)")],
@@ -196,12 +219,14 @@ async def paddle_create_product(
         if custom_data:
             body["custom_data"] = json.loads(custom_data)
         result = await client.create_product(body)
-        return format_product_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_product_detail(data), 1, target_id=data.get("id"), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_update_product(
     product_id: Annotated[str, Field(description="Product ID (pro_*)")],
     name: Annotated[str | None, Field(description="New name")] = None,
@@ -230,7 +255,8 @@ async def paddle_update_product(
         if custom_data is not None:
             body["custom_data"] = json.loads(custom_data)
         result = await client.update_product(product_id, body)
-        return format_product_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_product_detail(data), 1, target_id=data.get("id", product_id), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
@@ -241,6 +267,7 @@ async def paddle_update_product(
 
 
 @mcp.tool
+@_audited
 async def paddle_prices(
     product_id: Annotated[str | None, Field(description="Filter by product ID")] = None,
     status: Annotated[str | None, Field(description="Filter: active or archived")] = None,
@@ -251,12 +278,13 @@ async def paddle_prices(
     try:
         client = await _get_client()
         result = await client.list_prices(product_id=product_id, status=status, limit=limit, after=after)
-        return format_price_list(result, limit)
+        return meta_tail(format_price_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_price(
     price_id: Annotated[str, Field(description="Price ID (pri_*)")],
     fields: Annotated[str | None, Field(description="Comma-separated fields to return")] = None,
@@ -265,12 +293,13 @@ async def paddle_price(
     try:
         client = await _get_client()
         result = await client.get_price(price_id)
-        return format_price_detail(result.get("data", result), fields)
+        return meta_tail(format_price_detail(result.get("data", result), fields), 1, target_id=price_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_price(
     product_id: Annotated[str, Field(description="Product ID (pro_*)")],
     description: Annotated[str, Field(description="Price description (e.g., 'Monthly')")],
@@ -300,12 +329,14 @@ async def paddle_create_price(
         if trial_interval:
             body["trial_period"] = {"interval": trial_interval, "frequency": trial_frequency or 1}
         result = await client.create_price(body)
-        return format_price_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_price_detail(data), 1, target_id=data.get("id"), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_update_price(
     price_id: Annotated[str, Field(description="Price ID (pri_*)")],
     description: Annotated[str | None, Field(description="New description")] = None,
@@ -322,7 +353,8 @@ async def paddle_update_price(
         if status is not None:
             body["status"] = status
         result = await client.update_price(price_id, body)
-        return format_price_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_price_detail(data), 1, target_id=data.get("id", price_id), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
@@ -333,6 +365,7 @@ async def paddle_update_price(
 
 
 @mcp.tool
+@_audited
 async def paddle_customers(
     status: Annotated[str | None, Field(description="Filter: active or archived")] = None,
     search: Annotated[str | None, Field(description="Search by name or email")] = None,
@@ -343,12 +376,13 @@ async def paddle_customers(
     try:
         client = await _get_client()
         result = await client.list_customers(status=status, search=search, limit=limit, after=after)
-        return format_customer_list(result, limit)
+        return meta_tail(format_customer_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_customer(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     fields: Annotated[str | None, Field(description="Comma-separated fields to return")] = None,
@@ -357,12 +391,13 @@ async def paddle_customer(
     try:
         client = await _get_client()
         result = await client.get_customer(customer_id)
-        return format_customer_detail(result.get("data", result), fields)
+        return meta_tail(format_customer_detail(result.get("data", result), fields), 1, target_id=customer_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_customer(
     email: Annotated[str, Field(description="Customer email address")],
     name: Annotated[str | None, Field(description="Customer name")] = None,
@@ -379,12 +414,14 @@ async def paddle_create_customer(
         if locale:
             body["locale"] = locale
         result = await client.create_customer(body)
-        return format_customer_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_customer_detail(data), 1, target_id=data.get("id"), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_update_customer(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     name: Annotated[str | None, Field(description="New name")] = None,
@@ -407,12 +444,14 @@ async def paddle_update_customer(
         if locale is not None:
             body["locale"] = locale
         result = await client.update_customer(customer_id, body)
-        return format_customer_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_customer_detail(data), 1, target_id=data.get("id", customer_id), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_customer_credit(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
 ) -> str:
@@ -420,12 +459,13 @@ async def paddle_customer_credit(
     try:
         client = await _get_client()
         result = await client.get_credit_balance(customer_id)
-        return format_credit_balance(result)
+        return meta_tail(format_credit_balance(result), len(result.get("data", [])), target_id=customer_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_customer_portal(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
 ) -> str:
@@ -438,12 +478,13 @@ async def paddle_customer_portal(
         data = result.get("data", result)
         urls = data.get("urls", {})
         general_url = urls.get("general", {}).get("overview", "?")
-        return f"Portal URL: {general_url}"
+        return meta_tail(f"Portal URL: {general_url}", 1, target_id=customer_id, rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_customer_addresses(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     address_id: Annotated[str | None, Field(description="Address ID to get specific address")] = None,
@@ -461,14 +502,15 @@ async def paddle_customer_addresses(
                 if v := data.get(f):
                     parts.append(f"{f.replace('_', ' ').title()}: {v}")
             parts.append(f"Status: {data.get('status', '?')}")
-            return "\n".join(parts)
+            return meta_tail("\n".join(parts), 1, target_id=address_id)
         result = await client.list_addresses(customer_id, limit=limit, after=after)
-        return format_address_list(result, limit)
+        return meta_tail(format_address_list(result, limit), len(result.get("data", [])), target_id=customer_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_address(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     country_code: Annotated[str, Field(description="ISO 3166-1 alpha-2 country code")],
@@ -493,12 +535,18 @@ async def paddle_create_address(
             body["first_line"] = first_line
         result = await client.create_address(customer_id, body)
         data = result.get("data", result)
-        return f"Created address: {data.get('id', '?')} | {country_code}"
+        return meta_tail(
+            f"Created address: {data.get('id', '?')} | {country_code}",
+            1,
+            target_id=data.get("id"),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_update_address(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     address_id: Annotated[str, Field(description="Address ID (add_*)")],
@@ -526,12 +574,18 @@ async def paddle_update_address(
             body["status"] = status
         result = await client.update_address(customer_id, address_id, body)
         data = result.get("data", result)
-        return f"Updated address: {data.get('id', '?')}"
+        return meta_tail(
+            f"Updated address: {data.get('id', '?')}",
+            1,
+            target_id=data.get("id", address_id),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_customer_businesses(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     business_id: Annotated[str | None, Field(description="Business ID to get specific business")] = None,
@@ -551,14 +605,15 @@ async def paddle_customer_businesses(
             ]
             if tax := data.get("tax_identifier"):
                 parts.append(f"Tax ID: {tax}")
-            return "\n".join(parts)
+            return meta_tail("\n".join(parts), 1, target_id=business_id)
         result = await client.list_businesses(customer_id, limit=limit, after=after)
-        return format_business_list(result, limit)
+        return meta_tail(format_business_list(result, limit), len(result.get("data", [])), target_id=customer_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_business(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     name: Annotated[str, Field(description="Business name")],
@@ -577,7 +632,12 @@ async def paddle_create_business(
             body["company_number"] = company_number
         result = await client.create_business(customer_id, body)
         data = result.get("data", result)
-        return f"Created business: {data.get('id', '?')} | {name}"
+        return meta_tail(
+            f"Created business: {data.get('id', '?')} | {name}",
+            1,
+            target_id=data.get("id"),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
@@ -588,6 +648,7 @@ async def paddle_create_business(
 
 
 @mcp.tool
+@_audited
 async def paddle_subscriptions(
     status: Annotated[str | None, Field(description="Filter: active, canceled, past_due, paused, trialing")] = None,
     customer_id: Annotated[str | None, Field(description="Filter by customer ID")] = None,
@@ -601,12 +662,13 @@ async def paddle_subscriptions(
         result = await client.list_subscriptions(
             status=status, customer_id=customer_id, price_id=price_id, limit=limit, after=after
         )
-        return format_subscription_list(result, limit)
+        return meta_tail(format_subscription_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_subscription(
     subscription_id: Annotated[str, Field(description="Subscription ID (sub_*)")],
     include: Annotated[
@@ -618,12 +680,13 @@ async def paddle_subscription(
     try:
         client = await _get_client()
         result = await client.get_subscription(subscription_id, include=include)
-        return format_subscription_detail(result.get("data", result), fields)
+        return meta_tail(format_subscription_detail(result.get("data", result), fields), 1, target_id=subscription_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_update_subscription(
     subscription_id: Annotated[str, Field(description="Subscription ID (sub_*)")],
     items: Annotated[str | None, Field(description='Items JSON array: [{"price_id": "pri_*", "quantity": 1}]')] = None,
@@ -645,12 +708,16 @@ async def paddle_update_subscription(
         if custom_data:
             body["custom_data"] = json.loads(custom_data)
         result = await client.update_subscription(subscription_id, body)
-        return format_subscription_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(
+            format_subscription_detail(data), 1, target_id=data.get("id", subscription_id), rows_affected=1
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_subscription_lifecycle(
     subscription_id: Annotated[str, Field(description="Subscription ID (sub_*)")],
     action: Annotated[str, Field(description="Action: pause, resume, or cancel")],
@@ -681,12 +748,18 @@ async def paddle_subscription_lifecycle(
             return f"Error: Unknown action '{action}'. Use pause, resume, or cancel."
 
         data = result.get("data", result)
-        return f"Subscription {data.get('id', subscription_id)}: {action}d (status: {data.get('status', '?')})"
+        return meta_tail(
+            f"Subscription {data.get('id', subscription_id)}: {action}d (status: {data.get('status', '?')})",
+            1,
+            target_id=data.get("id", subscription_id),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_activate_subscription(
     subscription_id: Annotated[str, Field(description="Subscription ID (sub_*)")],
 ) -> str:
@@ -697,12 +770,18 @@ async def paddle_activate_subscription(
         client = await _get_client()
         result = await client.activate_subscription(subscription_id)
         data = result.get("data", result)
-        return f"Activated subscription: {data.get('id', subscription_id)} (status: {data.get('status', '?')})"
+        return meta_tail(
+            f"Activated subscription: {data.get('id', subscription_id)} (status: {data.get('status', '?')})",
+            1,
+            target_id=data.get("id", subscription_id),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_subscription_charge(
     subscription_id: Annotated[str, Field(description="Subscription ID (sub_*)")],
     items: Annotated[str, Field(description='Charge items JSON array: [{"price_id": "pri_*", "quantity": 1}]')],
@@ -718,12 +797,16 @@ async def paddle_subscription_charge(
             "effective_from": effective_from,
         }
         result = await client.charge_subscription(subscription_id, body)
-        return format_subscription_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(
+            format_subscription_detail(data), 1, target_id=data.get("id", subscription_id), rows_affected=1
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_preview_subscription(
     subscription_id: Annotated[str, Field(description="Subscription ID (sub_*)")],
     items: Annotated[str | None, Field(description="New items as JSON array")] = None,
@@ -738,7 +821,7 @@ async def paddle_preview_subscription(
         if proration_billing_mode:
             body["proration_billing_mode"] = proration_billing_mode
         result = await client.preview_subscription_update(subscription_id, body)
-        return format_subscription_detail(result.get("data", result))
+        return meta_tail(format_subscription_detail(result.get("data", result)), 1, target_id=subscription_id)
     except PaddleError as e:
         return _error(e)
 
@@ -749,6 +832,7 @@ async def paddle_preview_subscription(
 
 
 @mcp.tool
+@_audited
 async def paddle_transactions(
     status: Annotated[
         str | None, Field(description="Filter: draft, ready, billed, paid, completed, canceled, past_due")
@@ -772,12 +856,13 @@ async def paddle_transactions(
             limit=limit,
             after=after,
         )
-        return format_transaction_list(result, limit)
+        return meta_tail(format_transaction_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_transaction(
     transaction_id: Annotated[str, Field(description="Transaction ID (txn_*)")],
     include: Annotated[
@@ -789,12 +874,13 @@ async def paddle_transaction(
     try:
         client = await _get_client()
         result = await client.get_transaction(transaction_id, include=include)
-        return format_transaction_detail(result.get("data", result), fields)
+        return meta_tail(format_transaction_detail(result.get("data", result), fields), 1, target_id=transaction_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_transaction(
     items: Annotated[str, Field(description='Items as JSON array: [{"price_id": "pri_*", "quantity": 1}]')],
     customer_id: Annotated[str | None, Field(description="Customer ID")] = None,
@@ -814,12 +900,14 @@ async def paddle_create_transaction(
         if currency_code:
             body["currency_code"] = currency_code
         result = await client.create_transaction(body)
-        return format_transaction_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_transaction_detail(data), 1, target_id=data.get("id"), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_preview_transaction(
     items: Annotated[str, Field(description='Items as JSON array: [{"price_id": "pri_*", "quantity": 1}]')],
     customer_id: Annotated[str | None, Field(description="Customer ID")] = None,
@@ -837,12 +925,13 @@ async def paddle_preview_transaction(
         if currency_code:
             body["currency_code"] = currency_code
         result = await client.preview_transaction(body)
-        return format_transaction_detail(result.get("data", result))
+        return meta_tail(format_transaction_detail(result.get("data", result)), 1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_invoice_pdf(
     transaction_id: Annotated[str, Field(description="Transaction ID (txn_*)")],
 ) -> str:
@@ -852,7 +941,7 @@ async def paddle_invoice_pdf(
         result = await client.get_invoice_pdf(transaction_id)
         data = result.get("data", result)
         url = data.get("url", "?")
-        return f"Invoice PDF: {url}"
+        return meta_tail(f"Invoice PDF: {url}", 1, target_id=transaction_id)
     except PaddleError as e:
         return _error(e)
 
@@ -863,6 +952,7 @@ async def paddle_invoice_pdf(
 
 
 @mcp.tool
+@_audited
 async def paddle_adjustments(
     transaction_id: Annotated[str | None, Field(description="Filter by transaction ID")] = None,
     action: Annotated[str | None, Field(description="Filter: credit, refund, chargeback")] = None,
@@ -873,12 +963,13 @@ async def paddle_adjustments(
     try:
         client = await _get_client()
         result = await client.list_adjustments(transaction_id=transaction_id, action=action, limit=limit, after=after)
-        return format_adjustment_list(result, limit)
+        return meta_tail(format_adjustment_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_adjustment(
     adjustment_id: Annotated[str, Field(description="Adjustment ID (adj_*)")],
 ) -> str:
@@ -886,12 +977,13 @@ async def paddle_adjustment(
     try:
         client = await _get_client()
         result = await client.get_adjustment(adjustment_id)
-        return format_adjustment_detail(result)
+        return meta_tail(format_adjustment_detail(result), 1, target_id=adjustment_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_adjustment(
     transaction_id: Annotated[str, Field(description="Transaction ID (txn_*)")],
     action: Annotated[str, Field(description="Action: refund or credit")],
@@ -914,12 +1006,18 @@ async def paddle_create_adjustment(
             body["items"] = json.loads(items)
         result = await client.create_adjustment(body)
         data = result.get("data", result)
-        return f"Created adjustment: {data.get('id', '?')} | {action} | {data.get('status', '?')}"
+        return meta_tail(
+            f"Created adjustment: {data.get('id', '?')} | {action} | {data.get('status', '?')}",
+            1,
+            target_id=data.get("id"),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_discounts(
     status: Annotated[str | None, Field(description="Filter: active or archived")] = None,
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
@@ -929,26 +1027,28 @@ async def paddle_discounts(
     try:
         client = await _get_client()
         result = await client.list_discounts(status=status, limit=limit, after=after)
-        return format_discount_list(result, limit)
+        return meta_tail(format_discount_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_discount(
-    discount_id: Annotated[str, Field(description="Discount ID (dis_*)")],
+    discount_id: Annotated[str, Field(description="Discount ID (dsc_*)")],
     fields: Annotated[str | None, Field(description="Comma-separated fields to return")] = None,
 ) -> str:
     """Get discount detail."""
     try:
         client = await _get_client()
         result = await client.get_discount(discount_id)
-        return format_discount_detail(result.get("data", result), fields)
+        return meta_tail(format_discount_detail(result.get("data", result), fields), 1, target_id=discount_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_discount(
     amount: Annotated[str, Field(description="Discount amount (cents for flat, percentage value for percentage)")],
     description: Annotated[str, Field(description="Discount description")],
@@ -973,14 +1073,16 @@ async def paddle_create_discount(
         if usage_limit is not None:
             body["usage_limit"] = usage_limit
         result = await client.create_discount(body)
-        return format_discount_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_discount_detail(data), 1, target_id=data.get("id"), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_update_discount(
-    discount_id: Annotated[str, Field(description="Discount ID (dis_*)")],
+    discount_id: Annotated[str, Field(description="Discount ID (dsc_*)")],
     description: Annotated[str | None, Field(description="New description")] = None,
     status: Annotated[str | None, Field(description="active or archived")] = None,
     amount: Annotated[str | None, Field(description="New amount")] = None,
@@ -998,7 +1100,8 @@ async def paddle_update_discount(
         if amount is not None:
             body["amount"] = amount
         result = await client.update_discount(discount_id, body)
-        return format_discount_detail(result.get("data", result))
+        data = result.get("data", result)
+        return meta_tail(format_discount_detail(data), 1, target_id=data.get("id", discount_id), rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
@@ -1009,6 +1112,7 @@ async def paddle_update_discount(
 
 
 @mcp.tool
+@_audited
 async def paddle_payment_methods(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
@@ -1018,12 +1122,13 @@ async def paddle_payment_methods(
     try:
         client = await _get_client()
         result = await client.list_payment_methods(customer_id, limit=limit, after=after)
-        return format_payment_method_list(result, limit)
+        return meta_tail(format_payment_method_list(result, limit), len(result.get("data", [])), target_id=customer_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_delete_payment_method(
     customer_id: Annotated[str, Field(description="Customer ID (ctm_*)")],
     payment_method_id: Annotated[str, Field(description="Payment method ID (paymtd_*)")],
@@ -1037,7 +1142,9 @@ async def paddle_delete_payment_method(
     try:
         client = await _get_client()
         await client.delete_payment_method(customer_id, payment_method_id)
-        return f"Deleted payment method: {payment_method_id}"
+        return meta_tail(
+            f"Deleted payment method: {payment_method_id}", 1, target_id=payment_method_id, rows_affected=1
+        )
     except PaddleError as e:
         return _error(e)
 
@@ -1048,6 +1155,7 @@ async def paddle_delete_payment_method(
 
 
 @mcp.tool
+@_audited
 async def paddle_notification_settings(
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
     after: Annotated[str | None, Field(description="Cursor for pagination")] = None,
@@ -1056,12 +1164,13 @@ async def paddle_notification_settings(
     try:
         client = await _get_client()
         result = await client.list_notification_settings(limit=limit, after=after)
-        return format_notification_setting_list(result, limit)
+        return meta_tail(format_notification_setting_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_notification_setting(
     destination: Annotated[str, Field(description="Webhook URL or email address")],
     subscribed_events: Annotated[str, Field(description="Comma-separated event types (e.g., subscription.created)")],
@@ -1082,12 +1191,18 @@ async def paddle_create_notification_setting(
             body["description"] = description
         result = await client.create_notification_setting(body)
         data = result.get("data", result)
-        return f"Created notification setting: {data.get('id', '?')} | {destination}"
+        return meta_tail(
+            f"Created notification setting: {data.get('id', '?')} | {destination}",
+            1,
+            target_id=data.get("id"),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_delete_notification_setting(
     setting_id: Annotated[str, Field(description="Notification setting ID (ntfset_*)")],
     confirm: Annotated[bool, Field(description="Must be true to confirm deletion")] = False,
@@ -1100,12 +1215,13 @@ async def paddle_delete_notification_setting(
     try:
         client = await _get_client()
         await client.delete_notification_setting(setting_id)
-        return f"Deleted notification setting: {setting_id}"
+        return meta_tail(f"Deleted notification setting: {setting_id}", 1, target_id=setting_id, rows_affected=1)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_notifications(
     notification_setting_id: Annotated[str | None, Field(description="Filter by notification setting ID")] = None,
     status: Annotated[str | None, Field(description="Filter: delivered, failed, needs_retry, not_attempted")] = None,
@@ -1118,12 +1234,13 @@ async def paddle_notifications(
         result = await client.list_notifications(
             notification_setting_id=notification_setting_id, status=status, limit=limit, after=after
         )
-        return format_notification_list(result, limit)
+        return meta_tail(format_notification_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_notification(
     notification_id: Annotated[str, Field(description="Notification ID (ntf_*)")],
     include_logs: Annotated[bool, Field(description="Include delivery logs")] = False,
@@ -1142,12 +1259,13 @@ async def paddle_notification(
                     status_val = log_entry.get("response_code", "?")
                     attempted = log_entry.get("attempted_at", "?")
                     output += f"\n  {format_datetime(attempted)} | HTTP {status_val}"
-        return output
+        return meta_tail(output, 1, target_id=notification_id)
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_replay_notification(
     notification_id: Annotated[str, Field(description="Notification ID (ntf_*)")],
 ) -> str:
@@ -1158,12 +1276,18 @@ async def paddle_replay_notification(
         client = await _get_client()
         result = await client.replay_notification(notification_id)
         new_id = result.get("data", {}).get("notification_id", "?")
-        return f"Replayed notification: {notification_id} (new ID: {new_id})"
+        return meta_tail(
+            f"Replayed notification: {notification_id} (new ID: {new_id})",
+            1,
+            target_id=notification_id,
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_events(
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
     after: Annotated[str | None, Field(description="Cursor for pagination")] = None,
@@ -1172,18 +1296,19 @@ async def paddle_events(
     try:
         client = await _get_client()
         result = await client.list_events(limit=limit, after=after)
-        return format_event_list(result, limit)
+        return meta_tail(format_event_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_event_types() -> str:
     """List all event types Paddle can emit (used to populate webhook subscriptions)."""
     try:
         client = await _get_client()
         result = await client.list_event_types()
-        return format_event_type_list(result)
+        return meta_tail(format_event_type_list(result), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
@@ -1194,6 +1319,7 @@ async def paddle_event_types() -> str:
 
 
 @mcp.tool
+@_audited
 async def paddle_verify_webhook(
     body: Annotated[str, Field(description="Raw webhook request body (JSON string)")],
     signature: Annotated[str, Field(description="Paddle-Signature header value (ts=...;h1=...)")],
@@ -1206,17 +1332,18 @@ async def paddle_verify_webhook(
     if not webhook_secret:
         return "Error: No webhook secret provided. Set PADDLE_WEBHOOK_SECRET or pass secret= parameter."
     result = PaddleClient.verify_webhook_signature(body, signature, webhook_secret)
-    return format_webhook_verification(result)
+    return meta_tail(format_webhook_verification(result), 1)
 
 
 @mcp.tool
+@_audited
 async def paddle_parse_event(
     body: Annotated[str, Field(description="Webhook or event payload (JSON string)")],
 ) -> str:
     """Parse a webhook/event payload and extract type and key fields. No verification."""
     try:
         event = json.loads(body)
-        return format_event_detail(event)
+        return meta_tail(format_event_detail(event), 1, target_id=event.get("event_id"))
     except json.JSONDecodeError as e:
         return f"Error: Invalid JSON: {e}"
 
@@ -1227,6 +1354,7 @@ async def paddle_parse_event(
 
 
 @mcp.tool
+@_audited
 async def paddle_reports(
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
     after: Annotated[str | None, Field(description="Cursor for pagination")] = None,
@@ -1235,12 +1363,13 @@ async def paddle_reports(
     try:
         client = await _get_client()
         result = await client.list_reports(limit=limit, after=after)
-        return format_report_list(result, limit)
+        return meta_tail(format_report_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_report(
     report_type: Annotated[
         str, Field(description="Report type: transactions, transaction_line_items, products_prices, discounts")
@@ -1257,12 +1386,18 @@ async def paddle_create_report(
             body["filters"] = json.loads(filters)
         result = await client.create_report(body)
         data = result.get("data", result)
-        return f"Created report: {data.get('id', '?')} | {report_type} | status={data.get('status', '?')}"
+        return meta_tail(
+            f"Created report: {data.get('id', '?')} | {report_type} | status={data.get('status', '?')}",
+            1,
+            target_id=data.get("id"),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_report_csv(
     report_id: Annotated[str, Field(description="Report ID (rep_*)")],
 ) -> str:
@@ -1272,7 +1407,7 @@ async def paddle_report_csv(
         result = await client.get_report_csv(report_id)
         data = result.get("data", result)
         url = data.get("url", "?")
-        return f"CSV download URL: {url}"
+        return meta_tail(f"CSV download URL: {url}", 1, target_id=report_id)
     except PaddleError as e:
         return _error(e)
 
@@ -1283,6 +1418,7 @@ async def paddle_report_csv(
 
 
 @mcp.tool
+@_audited
 async def paddle_simulations(
     limit: Annotated[int, Field(description="Max results")] = DEFAULT_LIMIT,
     after: Annotated[str | None, Field(description="Cursor for pagination")] = None,
@@ -1291,12 +1427,13 @@ async def paddle_simulations(
     try:
         client = await _get_client()
         result = await client.list_simulations(limit=limit, after=after)
-        return format_simulation_list(result, limit)
+        return meta_tail(format_simulation_list(result, limit), len(result.get("data", [])))
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_create_simulation(
     event_type: Annotated[str, Field(description="Event type to simulate (e.g., subscription.created)")],
     notification_setting_id: Annotated[str, Field(description="Notification setting to send simulation to")],
@@ -1315,12 +1452,18 @@ async def paddle_create_simulation(
             body["name"] = name
         result = await client.create_simulation(body)
         data = result.get("data", result)
-        return f"Created simulation: {data.get('id', '?')} | {event_type}"
+        return meta_tail(
+            f"Created simulation: {data.get('id', '?')} | {event_type}",
+            1,
+            target_id=data.get("id"),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 
 
 @mcp.tool
+@_audited
 async def paddle_run_simulation(
     simulation_id: Annotated[str, Field(description="Simulation ID (sim_*)")],
     confirm: Annotated[bool, Field(description="Must be true to run")] = False,
@@ -1334,7 +1477,12 @@ async def paddle_run_simulation(
         client = await _get_client()
         result = await client.run_simulation(simulation_id)
         data = result.get("data", result)
-        return f"Simulation run started: {data.get('id', '?')} | status={data.get('status', '?')}"
+        return meta_tail(
+            f"Simulation run started: {data.get('id', '?')} | status={data.get('status', '?')}",
+            1,
+            target_id=data.get("id", simulation_id),
+            rows_affected=1,
+        )
     except PaddleError as e:
         return _error(e)
 

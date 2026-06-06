@@ -35,7 +35,7 @@ ENTITY_PREFIXES: dict[str, str] = {
     "sub_": "subscription",
     "txn_": "transaction",
     "adj_": "adjustment",
-    "dis_": "discount",
+    "dsc_": "discount",
     "ntf_": "notification",
     "ntfset_": "notification_setting",
     "evt_": "event",
@@ -73,6 +73,9 @@ CURRENCY_SYMBOLS: dict[str, str] = {
 
 # Zero-decimal currencies (amount is already in major units)
 ZERO_DECIMAL_CURRENCIES: set[str] = {"JPY", "KRW", "VND"}
+
+# Three-decimal currencies (amount is in thousandths of a major unit)
+THREE_DECIMAL_CURRENCIES: set[str] = {"BHD", "KWD", "OMR", "TND", "IQD", "JOD", "LYD"}
 
 
 # ---------------------------------------------------------------------------
@@ -141,25 +144,34 @@ def require_confirm(confirm: bool, action: str) -> str | None:
 def format_money(amount: str, currency_code: str) -> str:
     """Format a Paddle money amount for human-readable output.
 
-    Paddle stores amounts as string cents (e.g., "2900" for $29.00).
-    Zero-decimal currencies (JPY, KRW, VND) are already in major units.
+    Paddle stores amounts as string minor units. The number of minor units
+    per major unit depends on the currency:
+
+    - Zero-decimal currencies (JPY, KRW, VND): amount is already in major units.
+    - Three-decimal currencies (BHD, KWD, OMR, …): 1000 minor units per major.
+    - All others: 100 minor units (cents) per major.
 
     Examples:
         format_money("2900", "USD") -> "$29.00 USD"
         format_money("1000", "JPY") -> "¥1000 JPY"
+        format_money("1000", "BHD") -> "1.000 BHD"
         format_money("0", "USD") -> "$0.00 USD"
     """
     try:
-        cents = int(amount)
+        minor = int(amount)
     except (ValueError, TypeError):
         return f"{amount} {currency_code}"
 
     symbol = CURRENCY_SYMBOLS.get(currency_code, "")
 
     if currency_code in ZERO_DECIMAL_CURRENCIES:
-        return f"{symbol}{cents} {currency_code}"
+        return f"{symbol}{minor} {currency_code}"
 
-    major = cents / 100
+    if currency_code in THREE_DECIMAL_CURRENCIES:
+        major = minor / 1000
+        return f"{symbol}{major:.3f} {currency_code}"
+
+    major = minor / 100
     return f"{symbol}{major:.2f} {currency_code}"
 
 

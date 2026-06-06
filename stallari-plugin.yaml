@@ -1,5 +1,5 @@
 name: paddle-billing-blade-mcp
-version: "0.2.0"
+version: "0.3.0"
 description: "Paddle Billing API operations — billing-v1 (subscription billing, products, prices) + payments-v1 (transactions as one-time payments, adjustments as refunds). Token-efficient with pipe-delimited output, field selection, and human-readable money formatting."
 author: groupthink-dev
 license: MIT
@@ -67,11 +67,20 @@ services:
     # Events & Notifications
     events: paddle_events
     notifications: paddle_notifications
+    notification: paddle_notification
+    notification_settings: paddle_notification_settings
+    create_notification_setting: paddle_create_notification_setting
+    delete_notification_setting: paddle_delete_notification_setting
     replay_notification: paddle_replay_notification
     verify_webhook: paddle_verify_webhook
+    parse_event: paddle_parse_event
     # Reports & Simulation
     reports: paddle_reports
+    create_report: paddle_create_report
+    report_csv: paddle_report_csv
+    simulations: paddle_simulations
     simulate: paddle_create_simulation
+    run_simulation: paddle_run_simulation
 
   # ----------------------------------------------------------------------
   # payments-v1 mappings (Paddle one-time payments via transactions,

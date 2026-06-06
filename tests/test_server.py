@@ -82,9 +82,12 @@ class TestMetaTools:
 
     @pytest.mark.asyncio
     async def test_paddle_ip_addresses(self, mock_client: AsyncMock) -> None:
-        mock_client.list_ip_addresses.return_value = {"data": [{"ipv4_cidr": "1.2.3.4/32"}]}
+        # Live GET /ips shape: {"data": {"ipv4_cidrs": [...]}}.
+        mock_client.list_ip_addresses.return_value = {"data": {"ipv4_cidrs": ["1.2.3.4/32", "5.6.7.8/32"]}}
         result = await paddle_ip_addresses()
         assert "1.2.3.4/32" in result
+        assert "5.6.7.8/32" in result
+        assert "ipv4_cidrs" not in result.split("_meta:")[0]
 
 
 # ---------------------------------------------------------------------------

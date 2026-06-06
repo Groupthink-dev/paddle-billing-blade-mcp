@@ -382,6 +382,14 @@ class TestTransactionDetail:
         assert "Total: $29.00 USD" in result
         assert "Pro Plan" in result
 
+    def test_line_item_amount_from_totals_total(self) -> None:
+        # Regression: the line-item amount is at line_items[].totals.total,
+        # not a top-level "total" key — must not render $0.00.
+        result = format_transaction_detail(SAMPLE_TRANSACTION)
+        line_items_section = result.split("Line Items")[1]
+        assert "Pro Plan | qty=1 | $29.00 USD" in line_items_section
+        assert "$0.00" not in line_items_section
+
 
 class TestDiscountDetail:
     def test_percentage(self) -> None:
@@ -454,15 +462,17 @@ class TestEventDetail:
 
 
 class TestIpAddresses:
-    def test_formats_dict(self) -> None:
-        data = {"data": [{"ipv4_cidr": "34.194.127.46/32"}]}
+    def test_formats_cidr_list(self) -> None:
+        # Live GET /ips shape: {"data": {"ipv4_cidrs": [...]}}.
+        data = {"data": {"ipv4_cidrs": ["34.194.127.46/32", "3.208.120.145/32"]}}
         result = format_ip_addresses(data)
         assert "34.194.127.46/32" in result
+        assert "3.208.120.145/32" in result
+        # Must NOT leak the literal key name (the pre-fix defect).
+        assert "ipv4_cidrs" not in result
 
-    def test_formats_str(self) -> None:
-        data = {"data": ["34.194.127.46/32"]}
-        result = format_ip_addresses(data)
-        assert "34.194.127.46/32" in result
+    def test_empty_object(self) -> None:
+        assert format_ip_addresses({"data": {"ipv4_cidrs": []}}) == "No IP addresses returned."
 
-    def test_empty(self) -> None:
-        assert format_ip_addresses({"data": []}) == "No IP addresses returned."
+    def test_empty_missing(self) -> None:
+        assert format_ip_addresses({"data": {}}) == "No IP addresses returned."

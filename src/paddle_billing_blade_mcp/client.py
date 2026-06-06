@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 import httpx
@@ -24,6 +25,14 @@ from paddle_billing_blade_mcp.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _client_version() -> str:
+    """Resolve the installed package version for the X-Paddle-Client-Version header."""
+    try:
+        return version("paddle-billing-blade-mcp")
+    except PackageNotFoundError:
+        return "0.3.0"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +133,7 @@ class PaddleClient:
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
                 "X-Paddle-Client": "paddle-billing-blade-mcp",
-                "X-Paddle-Client-Version": "0.1.0",
+                "X-Paddle-Client-Version": _client_version(),
             },
             timeout=30.0,
         )
