@@ -115,6 +115,17 @@ class TestFormatMoney:
     def test_jpy_zero_decimal(self) -> None:
         assert format_money("1000", "JPY") == "¥1000 JPY"
 
+    def test_bhd_three_decimal(self) -> None:
+        # BHD is a 3-decimal currency: 1000 minor units = 1.000 BHD.
+        assert format_money("1000", "BHD") == "1.000 BHD"
+
+    def test_kwd_three_decimal(self) -> None:
+        assert format_money("2500", "KWD") == "2.500 KWD"
+
+    def test_two_decimal_unaffected_by_three_decimal_set(self) -> None:
+        # Regression: the 3-decimal carve-out must not change ordinary cents.
+        assert format_money("2900", "USD") == "$29.00 USD"
+
     def test_unknown_currency(self) -> None:
         result = format_money("500", "XYZ")
         assert "5.00" in result
